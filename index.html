@@ -3669,18 +3669,43 @@
         setShowChangePinModal(false);
         triggerToast('PIN keselamatan Kaunselor berjaya dikemaskini.');
       };
+      
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwHNQelprJXXLgPdBT3glCl-cDW4lqI02bcpPK09DorXP557nCxuJVfIZeJoRSSgcEwUg/exec";
 
-      const handleAddReferral = (data) => {
-        const saved = saveReferralToStorage(data);
-        setSessionSubmittedIds(prev => [saved.id, ...prev]);
-        setReferrals(getStoredReferrals());
-        triggerToast(`Borang rujukan bagi murid ${saved.muridNama} berjaya dihantar. No Rujukan: ${saved.id}`);
-        if (role === 'KAUNSELOR') {
-          setActiveTab('dashboard');
-        } else {
-          setActiveTab('my_referrals');
-        }
+    const handleAddReferral = (data) => {
+      const saved = saveReferralToStorage(data);
+      setSessionSubmittedIds(prev => [saved.id, ...prev]);
+      setReferrals(getStoredReferrals());
+
+      // Hantar data ke Google Sheets melalui Apps Script
+      const payload = {
+        referralId: saved.id,
+        studentName: saved.muridNama || "",
+        className: saved.muridKelas || "",
+        year: saved.muridKelas ? saved.muridKelas.replace(/[^0-9]/g, "") : "",
+        teacherName: saved.guruNama || "",
+        teacherRole: "Guru",
+        category: saved.kategoriIsu || "",
+        priority: saved.tahapKeutamaan || "",
+        reason: saved.ulasanPdP || "",
+        teacherAction: saved.tindakanGuru || "Tiada",
+        status: "BAHARU"
       };
+
+      fetch(APPS_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).catch(err => console.error(err));
+
+      triggerToast(`Borang rujukan bagi murid ${saved.muridNama} berjaya dihantar. No Rujukan: ${saved.id}`);
+      if (role === 'KAUNSELOR') {
+        setActiveTab('dashboard');
+      } else {
+        setActiveTab('my_referrals');
+      }
+    };
 
       const handleUpdateStatus = (id, status, ulasan, tarikhSesi) => {
         const current = getStoredReferrals();
