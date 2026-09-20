@@ -454,7 +454,7 @@
       ubkMotto: "Bimbingan Mesra, Kaunseling Sejahtera",
     };
 
-    // Official KPM Counseling Framework (CLEAN PLAIN ASCII TEXT - NO EMOJIS)
+    // Official KPM Counseling Framework
     const COUNSELING_FRAMEWORK = {
       visi: "Pendidikan Berkualiti Insan Terdidik Negara Sejahtera",
       misi: "Melestarikan Sistem Pendidikan Yang Berkualiti Untuk Membangunkan Potensi Individu Bagi Memenuhi Aspirasi Negara",
@@ -3484,11 +3484,39 @@
       { id: "KONSULTASI_IBUBAPA", label: "Konsultasi Bersama Ibu Bapa / Penjaga" }
     ];
 
-    // Local Storage Helpers
+    // Storage Keys
     const STORAGE_KEY = 'ubk_tampasuk1_referrals_v12';
     const COUNSELOR_PIN_KEY = 'ubk_tampasuk1_counselor_pin';
+    const CLOUD_SYNC_URL_KEY = 'ubk_tampasuk1_cloud_sync_url';
 
     const getStoredPin = () => localStorage.getItem(COUNSELOR_PIN_KEY) || '1234';
+    const getCloudSyncUrl = () => localStorage.getItem(CLOUD_SYNC_URL_KEY) || '';
+
+    const fetchCloudData = async (url) => {
+      if (!url) return null;
+      try {
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) return null;
+        const json = await res.json();
+        return Array.isArray(json) ? json : (json.referrals || null);
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const pushCloudData = async (url, dataArray) => {
+      if (!url) return false;
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(dataArray)
+        });
+        return res.ok;
+      } catch (e) {
+        return false;
+      }
+    };
 
     const getStoredReferrals = () => {
       try {
@@ -3600,22 +3628,29 @@
       const [showChangePinModal, setShowChangePinModal] = useState(false);
       const [newPin, setNewPin] = useState('');
 
-      // Counseling Framework Modal
+      // Counseling Framework Modal & Cloud Sync Modal
       const [showFrameworkModal, setShowFrameworkModal] = useState(false);
+      const [showCloudSyncModal, setShowCloudSyncModal] = useState(false);
+      const [isCloudConnected, setIsCloudConnected] = useState(!!getCloudSyncUrl());
 
       // Session submitted IDs
       const [sessionSubmittedIds, setSessionSubmittedIds] = useState([]);
 
-      // REAL-TIME BACKGROUND SYNC (CLEAN, INVISIBLE IN UI)
+      // REAL-TIME CLOUD & LOCAL STORAGE SYNC ENGINE (EVERY 4 SECONDS)
       useEffect(() => {
-        const handleStorageChange = (e) => {
-          if (e.key === STORAGE_KEY || !e.key) {
-            setReferrals(getStoredReferrals());
-          }
-        };
-        window.addEventListener('storage', handleStorageChange);
+        const syncData = async () => {
+          const cloudUrl = getCloudSyncUrl();
+          setIsCloudConnected(!!cloudUrl);
 
-        const pollInterval = setInterval(() => {
+          if (cloudUrl) {
+            const cloudData = await fetchCloudData(cloudUrl);
+            if (cloudData && Array.isArray(cloudData)) {
+              setReferrals(cloudData);
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+              return;
+            }
+          }
+
           const latest = getStoredReferrals();
           setReferrals(prev => {
             if (JSON.stringify(prev) !== JSON.stringify(latest)) {
@@ -3623,7 +3658,17 @@
             }
             return prev;
           });
-        }, 3000);
+        };
+
+        syncData();
+        const pollInterval = setInterval(syncData, 4000);
+
+        const handleStorageChange = (e) => {
+          if (e.key === STORAGE_KEY || !e.key) {
+            setReferrals(getStoredReferrals());
+          }
+        };
+        window.addEventListener('storage', handleStorageChange);
 
         return () => {
           window.removeEventListener('storage', handleStorageChange);
@@ -3669,45 +3714,27 @@
         setShowChangePinModal(false);
         triggerToast('PIN keselamatan Kaunselor berjaya dikemaskini.');
       };
-      
-    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwHNQelprJXXLgPdBT3glCl-cDW4lqI02bcpPK09DorXP557nCxuJVfIZeJoRSSgcEwUg/exec";
 
-    const handleAddReferral = (data) => {
-      const saved = saveReferralToStorage(data);
-      setSessionSubmittedIds(prev => [saved.id, ...prev]);
-      setReferrals(getStoredReferrals());
+      const handleAddReferral = async (data) => {
+        const saved = saveReferralToStorage(data);
+        setSessionSubmittedIds(prev => [saved.id, ...prev]);
+        const updatedAll = getStoredReferrals();
+        setReferrals(updatedAll);
 
-      // Hantar data ke Google Sheets melalui Apps Script
-      const payload = {
-        referralId: saved.id,
-        studentName: saved.muridNama || "",
-        className: saved.muridKelas || "",
-        year: saved.muridKelas ? saved.muridKelas.replace(/[^0-9]/g, "") : "",
-        teacherName: saved.guruNama || "",
-        teacherRole: "Guru",
-        category: saved.kategoriIsu || "",
-        priority: saved.tahapKeutamaan || "",
-        reason: saved.ulasanPdP || "",
-        teacherAction: saved.tindakanGuru || "Tiada",
-        status: "BAHARU"
+        const cloudUrl = getCloudSyncUrl();
+        if (cloudUrl) {
+          await pushCloudData(cloudUrl, updatedAll);
+        }
+
+        triggerToast(`Borang rujukan bagi murid ${saved.muridNama} berjaya dihantar. No Rujukan: ${saved.id}`);
+        if (role === 'KAUNSELOR') {
+          setActiveTab('dashboard');
+        } else {
+          setActiveTab('my_referrals');
+        }
       };
 
-      fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        mode: "no-cors",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      }).catch(err => console.error(err));
-
-      triggerToast(`Borang rujukan bagi murid ${saved.muridNama} berjaya dihantar. No Rujukan: ${saved.id}`);
-      if (role === 'KAUNSELOR') {
-        setActiveTab('dashboard');
-      } else {
-        setActiveTab('my_referrals');
-      }
-    };
-
-      const handleUpdateStatus = (id, status, ulasan, tarikhSesi) => {
+      const handleUpdateStatus = async (id, status, ulasan, tarikhSesi) => {
         const current = getStoredReferrals();
         const updated = current.map(item => {
           if (item.id === id) {
@@ -3717,15 +3744,27 @@
         });
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
         setReferrals(updated);
+
+        const cloudUrl = getCloudSyncUrl();
+        if (cloudUrl) {
+          await pushCloudData(cloudUrl, updated);
+        }
+
         triggerToast(`Status tindakan rekod ${id} berjaya dikemaskini.`);
       };
 
-      const handleDelete = (id) => {
+      const handleDelete = async (id) => {
         if (role !== 'KAUNSELOR') return alert('Hanya Kaunselor Sekolah yang dibenarkan memadam rekod.');
         if (confirm(`Adakah anda pasti mahu memadam rekod ${id}?`)) {
           const updated = referrals.filter(r => r.id !== id);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
           setReferrals(updated);
+
+          const cloudUrl = getCloudSyncUrl();
+          if (cloudUrl) {
+            await pushCloudData(cloudUrl, updated);
+          }
+
           triggerToast(`Rekod ${id} dipadam.`);
         }
       };
@@ -3772,9 +3811,18 @@
                 </div>
               </div>
 
-              {/* SINGLE LOG MASUK KAUNSELOR BUTTON & FRAMEWORK MODAL TRIGGER (CLEAN TEXT) */}
+              {/* ACTION BUTTONS & CLOUD SYNC STATUS */}
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.6rem' }}>
                 <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  
+                  <button 
+                    onClick={() => setShowCloudSyncModal(true)}
+                    className="btn btn-outline"
+                    style={{ fontSize: '0.82rem', padding: '0.45rem 0.95rem', borderColor: isCloudConnected ? '#34d399' : 'var(--primary-300)' }}
+                  >
+                    {isCloudConnected ? 'ðŸŸ¢ Awan Aktif (Rentasi Peranti)' : 'â˜ï¸ Tetapan Pangkalan Awan'}
+                  </button>
+
                   <button 
                     onClick={() => setShowFrameworkModal(true)}
                     className="btn btn-outline"
@@ -3997,7 +4045,7 @@
             </div>
           )}
 
-          {/* Official KPM Counseling Framework Modal (CLEAN TEXT) */}
+          {/* Official KPM Counseling Framework Modal */}
           {showFrameworkModal && (
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: '1.25rem' }}>
               <div className="pro-card" style={{ width: '100%', maxWidth: '780px', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
@@ -4055,6 +4103,67 @@
 
                 <div style={{ padding: '1rem 1.6rem', backgroundColor: 'var(--slate-50)', borderTop: '1px solid var(--slate-200)', display: 'flex', justifyContent: 'flex-end' }}>
                   <button onClick={() => setShowFrameworkModal(false)} className="btn btn-primary">Tutup Panduan</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Cloud Database Setup Modal */}
+          {showCloudSyncModal && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15, 23, 42, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: '1.25rem' }}>
+              <div className="pro-card" style={{ width: '100%', maxWidth: '750px', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+                <div className="pro-card-header" style={{ padding: '1.2rem 1.6rem' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.25rem', margin: 0, fontWeight: '800', color: '#ffffff' }}>
+                      Tetapan Penyamaan Pangkalan Data Rentas Peranti
+                    </h3>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--gold-300)' }}>
+                      Hubungkan Google Sheets / API Awan Untuk Akses Semua Kaunselor
+                    </div>
+                  </div>
+                  <button onClick={() => setShowCloudSyncModal(false)} style={{ background: 'transparent', border: 'none', color: '#ffffff', fontSize: '1.5rem', cursor: 'pointer', fontWeight: 'bold' }}>&times;</button>
+                </div>
+
+                <div className="pro-card-body" style={{ overflowY: 'auto', padding: '1.75rem 2rem', fontSize: '0.92rem' }}>
+                  <div style={{ backgroundColor: 'var(--primary-50)', padding: '1.25rem', borderRadius: '12px', borderLeft: '4px solid var(--primary-800)', marginBottom: '1.5rem' }}>
+                    <strong style={{ color: 'var(--primary-950)', fontSize: '0.98rem', display: 'block', marginBottom: '0.35rem' }}>
+                      Penyamaan Masa-Nyata Antara Telefon, Laptop & PC
+                    </strong>
+                    <p style={{ color: 'var(--slate-700)', fontSize: '0.88rem' }}>
+                      Masukkan URL Web App API Google Sheets sekolah anda atau Cloud Store API. Setelah dimasukkan, sebarang borang rujukan yang dihantar atau dikemaskini oleh mana-mana guru/kaunselor akan disegerakkan secara automatik ke semua peranti!
+                    </p>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">URL API Google Sheets / Pangkalan Data Awan <span className="required">*</span></label>
+                    <input 
+                      type="url"
+                      placeholder="Contoh: https://script.google.com/macros/s/AKfycbx.../exec"
+                      defaultValue={getCloudSyncUrl()}
+                      id="cloudUrlInput"
+                      className="form-input"
+                      style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+                    <button type="button" onClick={() => { localStorage.removeItem(CLOUD_SYNC_URL_KEY); setIsCloudConnected(false); alert('Penyamaan Awan Dinyahaktifkan. Mod LocalStorage diaktifkan.'); setShowCloudSyncModal(false); }} className="btn btn-secondary">
+                      Guna Mod Tempatan
+                    </button>
+                    <button type="button" onClick={() => {
+                      const val = document.getElementById('cloudUrlInput').value.trim();
+                      if (val) {
+                        localStorage.setItem(CLOUD_SYNC_URL_KEY, val);
+                        setIsCloudConnected(true);
+                        alert('URL Pangkalan Data Awan Berjaya Disimpan!');
+                        setShowCloudSyncModal(false);
+                      } else {
+                        alert('Sila masukkan URL API yang sah.');
+                      }
+                    }} className="btn btn-primary">
+                      Simpan & Aktifkan Penyamaan
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
