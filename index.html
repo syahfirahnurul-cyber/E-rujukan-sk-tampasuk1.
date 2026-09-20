@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ms">
 <head>
   <meta charset="UTF-8">
@@ -454,7 +454,7 @@
       ubkMotto: "Bimbingan Mesra, Kaunseling Sejahtera",
     };
 
-    // Official KPM Counseling Framework
+    // Official KPM Counseling Framework (CLEAN PLAIN ASCII TEXT - NO EMOJIS)
     const COUNSELING_FRAMEWORK = {
       visi: "Pendidikan Berkualiti Insan Terdidik Negara Sejahtera",
       misi: "Melestarikan Sistem Pendidikan Yang Berkualiti Untuk Membangunkan Potensi Individu Bagi Memenuhi Aspirasi Negara",
@@ -3518,30 +3518,13 @@
       }
     };
 
+    // ZERO DUMMY DATA INITIALIZATION
     const getStoredReferrals = () => {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) {
-          const defaultSample = [{
-            id: 'RUJ-2026-001',
-            tarikh: new Date().toISOString().split('T')[0],
-            guruNama: 'Razana binti Abdul Wahid',
-            muridId: 'STU-0002',
-            muridNama: 'AFFAN MIKAEAL BIN MOHD. HAMIZAN',
-            muridIc: '191227121291',
-            muridKelas: '1A',
-            muridJantina: 'LELAKI',
-            kategoriIsu: 'AKADEMIK',
-            tahapKeutamaan: 'SEDERHANA',
-            jenisPerkhidmatan: 'BIMBINGAN_INDIVIDU',
-            ulasanPdP: 'Murid kurang fokus semasa waktu pengajaran Bahasa Melayu. Kerap menunjukkan sikap muram dan tidak menyiapkan latihan kendiri.',
-            tindakanGuru: 'Telah memberi nasihat individu dan menukar tempat duduk ke barisan hadapan.',
-            status: 'BAHARU',
-            ulasanKaunselor: '',
-            tarikhSesi: '',
-          }];
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultSample));
-          return defaultSample;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
+          return [];
         }
         return JSON.parse(raw);
       } catch (e) {
@@ -3820,7 +3803,7 @@
                     className="btn btn-outline"
                     style={{ fontSize: '0.82rem', padding: '0.45rem 0.95rem', borderColor: isCloudConnected ? '#34d399' : 'var(--primary-300)' }}
                   >
-                    {isCloudConnected ? 'ðŸŸ¢ Awan Aktif (Rentasi Peranti)' : 'â˜ï¸ Tetapan Pangkalan Awan'}
+                    {isCloudConnected ? 'Awan Aktif (Rentasi Peranti)' : 'Tetapan Pangkalan Awan'}
                   </button>
 
                   <button 
