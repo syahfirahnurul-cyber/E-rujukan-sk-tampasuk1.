@@ -3484,18 +3484,35 @@
       { id: "KONSULTASI_IBUBAPA", label: "Konsultasi Bersama Ibu Bapa / Penjaga" }
     ];
 
+    // =================================================================
+    // GLOBAL CLOUD SYNC URL - MAIN DEVELOPER BOLEH SET DI SINI SEKALI
+    // Semua pengguna (guru & kaunselor) akan auto-sync ke Google Sheet
+    // tanpa perlu set apa-apa sendiri.
+    // =================================================================
+    const DEFAULT_GLOBAL_CLOUD_SYNC_URL = 'https://script.google.com/macros/s/AKfycbx1VeJ_WSrNAyFvdvDOrfJt5NRsMix_kVF3ffvPj0PwlqeMiegyqSjXOFdcN5ZQyBT9dg/exec';
+
     // Storage Keys
     const STORAGE_KEY = 'ubk_tampasuk1_referrals_v12';
     const COUNSELOR_PIN_KEY = 'ubk_tampasuk1_counselor_pin';
     const CLOUD_SYNC_URL_KEY = 'ubk_tampasuk1_cloud_sync_url';
+    const COUNSELOR_EMAIL_KEY = 'ubk_tampasuk1_counselor_email';
 
     const getStoredPin = () => localStorage.getItem(COUNSELOR_PIN_KEY) || '1234';
-    const getCloudSyncUrl = () => localStorage.getItem(CLOUD_SYNC_URL_KEY) || '';
+    const getCounselorNotificationEmail = () => localStorage.getItem(COUNSELOR_EMAIL_KEY) || '';
+
+    // Dapatkan URL cloud - kembalikan string kosong jika URL belum diisi
+    const getCloudSyncUrl = () => {
+      const saved = localStorage.getItem(CLOUD_SYNC_URL_KEY);
+      const u = saved || DEFAULT_GLOBAL_CLOUD_SYNC_URL;
+      if (!u || u.includes('PASTE_YOUR_WEB_APP_URL_HERE') || !u.startsWith('http')) return '';
+      return u;
+    };
 
     const fetchCloudData = async (url) => {
-      if (!url) return null;
+      const targetUrl = url || getCloudSyncUrl();
+      if (!targetUrl) return null;
       try {
-        const res = await fetch(url, { method: 'GET' });
+        const res = await fetch(targetUrl, { method: 'GET' });
         if (!res.ok) return null;
         const json = await res.json();
         return Array.isArray(json) ? json : (json.referrals || null);
@@ -3505,14 +3522,20 @@
     };
 
     const pushCloudData = async (url, dataArray) => {
-      if (!url) return false;
+      const targetUrl = url || getCloudSyncUrl();
+      if (!targetUrl) return false;
+      const counselorEmail = getCounselorNotificationEmail();
       try {
-        const res = await fetch(url, {
+        await fetch(targetUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(dataArray)
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            referrals: dataArray,
+            counselorEmail: counselorEmail
+          })
         });
-        return res.ok;
+        return true;
       } catch (e) {
         return false;
       }
@@ -3614,26 +3637,55 @@
       // Counseling Framework Modal & Cloud Sync Modal
       const [showFrameworkModal, setShowFrameworkModal] = useState(false);
       const [showCloudSyncModal, setShowCloudSyncModal] = useState(false);
-      const [isCloudConnected, setIsCloudConnected] = useState(!!getCloudSyncUrl());
+      const [isCloudConnected, setIsCloudConnected] = useState(false);
+      const [isSubmitting, setIsSubmitting] = useState(false);
+
+      // Pre-selected student from directory (auto-fill borang)
+      const [preSelectedStudent, setPreSelectedStudent] = useState(null);
 
       // Session submitted IDs
       const [sessionSubmittedIds, setSessionSubmittedIds] = useState([]);
 
-      // REAL-TIME CLOUD & LOCAL STORAGE SYNC ENGINE (EVERY 4 SECONDS)
+      // REAL-TIME CLOUD & LOCAL STORAGE SYNC ENGINE (SETIAP 5 SAAT)
+      // Kaunselor dari device berlainan akan nampak data real-time
       useEffect(() => {
+        // Minta kebenaran notifikasi browser
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+
+        let knownIds = new Set(getStoredReferrals().map(r => r.id));
+
         const syncData = async () => {
           const cloudUrl = getCloudSyncUrl();
-          setIsCloudConnected(!!cloudUrl);
+          const isConnected = !!cloudUrl;
+          setIsCloudConnected(isConnected);
 
-          if (cloudUrl) {
+          if (isConnected) {
             const cloudData = await fetchCloudData(cloudUrl);
             if (cloudData && Array.isArray(cloudData)) {
+              // Semak rujukan baharu untuk notifikasi
+              const newOnes = cloudData.filter(r => !knownIds.has(r.id));
+              if (newOnes.length > 0) {
+                newOnes.forEach(r => knownIds.add(r.id));
+                // Pop-up notifikasi OS/Browser
+                if ('Notification' in window && Notification.permission === 'granted') {
+                  newOnes.forEach(r => {
+                    new Notification('[KES BAHARU] Rujukan Diterima', {
+                      body: r.muridNama + ' (' + r.muridKelas + ') - oleh ' + r.guruNama,
+                      icon: LOGO_SRC,
+                      tag: r.id
+                    });
+                  });
+                }
+              }
               setReferrals(cloudData);
               localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
               return;
             }
           }
 
+          // Fallback: guna local storage jika tiada sambungan awan
           const latest = getStoredReferrals();
           setReferrals(prev => {
             if (JSON.stringify(prev) !== JSON.stringify(latest)) {
@@ -3644,7 +3696,7 @@
         };
 
         syncData();
-        const pollInterval = setInterval(syncData, 4000);
+        const pollInterval = setInterval(syncData, 5000);
 
         const handleStorageChange = (e) => {
           if (e.key === STORAGE_KEY || !e.key) {
@@ -3698,22 +3750,31 @@
         triggerToast('PIN keselamatan Kaunselor berjaya dikemaskini.');
       };
 
-      const handleAddReferral = async (data) => {
-        const saved = saveReferralToStorage(data);
-        setSessionSubmittedIds(prev => [saved.id, ...prev]);
-        const updatedAll = getStoredReferrals();
-        setReferrals(updatedAll);
+      const handleAddReferral = async (data, resetForm) => {
+        if (isSubmitting) return;
+        setIsSubmitting(true);
+        try {
+          const saved = saveReferralToStorage(data);
+          setSessionSubmittedIds(prev => [saved.id, ...prev]);
+          const updatedAll = getStoredReferrals();
+          setReferrals(updatedAll);
 
-        const cloudUrl = getCloudSyncUrl();
-        if (cloudUrl) {
-          await pushCloudData(cloudUrl, updatedAll);
-        }
+          const cloudUrl = getCloudSyncUrl();
+          if (cloudUrl) {
+            await pushCloudData(cloudUrl, updatedAll);
+          }
 
-        triggerToast(`Borang rujukan bagi murid ${saved.muridNama} berjaya dihantar. No Rujukan: ${saved.id}`);
-        if (role === 'KAUNSELOR') {
-          setActiveTab('dashboard');
-        } else {
-          setActiveTab('my_referrals');
+          // Reset form selepas berjaya hantar
+          if (typeof resetForm === 'function') resetForm();
+
+          triggerToast('Rujukan ' + saved.id + ' - ' + saved.muridNama + ' berjaya dihantar kepada Kaunselor Sekolah!');
+          if (role === 'KAUNSELOR') {
+            setActiveTab('dashboard');
+          } else {
+            setActiveTab('my_referrals');
+          }
+        } finally {
+          setIsSubmitting(false);
         }
       };
 
@@ -3794,24 +3855,16 @@
                 </div>
               </div>
 
-              {/* ACTION BUTTONS & CLOUD SYNC STATUS */}
+              {/* ACTION BUTTONS - ROLE BASED */}
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.6rem' }}>
                 <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                  
-                  <button 
-                    onClick={() => setShowCloudSyncModal(true)}
-                    className="btn btn-outline"
-                    style={{ fontSize: '0.82rem', padding: '0.45rem 0.95rem', borderColor: isCloudConnected ? '#34d399' : 'var(--primary-300)' }}
-                  >
-                    {isCloudConnected ? 'ðŸŸ¢ Awan Aktif (Rentasi Peranti)' : 'â˜ï¸ Tetapan Pangkalan Awan'}
-                  </button>
 
                   <button 
                     onClick={() => setShowFrameworkModal(true)}
                     className="btn btn-outline"
                     style={{ fontSize: '0.82rem', padding: '0.45rem 0.95rem' }}
                   >
-                    Panduan B&K KPM
+                    Panduan B&amp;K KPM
                   </button>
 
                   {role === 'GURU' ? (
@@ -3824,6 +3877,14 @@
                     </button>
                   ) : (
                     <>
+                      {/* Butang awan hanya untuk Kaunselor */}
+                      <button 
+                        onClick={() => setShowCloudSyncModal(true)}
+                        className="btn btn-outline"
+                        style={{ fontSize: '0.82rem', padding: '0.45rem 0.95rem', borderColor: isCloudConnected ? '#34d399' : 'var(--primary-300)', color: isCloudConnected ? '#34d399' : undefined }}
+                      >
+                        {isCloudConnected ? '[Awan Aktif]' : '[Tetapan Awan]'}
+                      </button>
                       <button 
                         onClick={() => setShowChangePinModal(true)}
                         className="btn btn-outline"
@@ -3914,7 +3975,10 @@
             {activeTab === 'form' && (
               <FormPage 
                 students={students} 
-                onSubmit={handleAddReferral} 
+                onSubmit={handleAddReferral}
+                isSubmitting={isSubmitting}
+                preSelectedStudent={preSelectedStudent}
+                onClearPreSelected={() => setPreSelectedStudent(null)}
               />
             )}
 
@@ -3942,7 +4006,10 @@
               <StudentListPage 
                 students={students} 
                 role={role}
-                onSelectForReferral={() => setActiveTab('form')} 
+                onSelectForReferral={(student) => {
+                  setPreSelectedStudent(student);
+                  setActiveTab('form');
+                }} 
               />
             )}
 
@@ -4110,15 +4177,15 @@
                 <div className="pro-card-body" style={{ overflowY: 'auto', padding: '1.75rem 2rem', fontSize: '0.92rem' }}>
                   <div style={{ backgroundColor: 'var(--primary-50)', padding: '1.25rem', borderRadius: '12px', borderLeft: '4px solid var(--primary-800)', marginBottom: '1.5rem' }}>
                     <strong style={{ color: 'var(--primary-950)', fontSize: '0.98rem', display: 'block', marginBottom: '0.35rem' }}>
-                      Penyamaan Masa-Nyata Antara Telefon, Laptop & PC
+                       Penyamaan Masa-Nyata Antara Telefon, Laptop & PC
                     </strong>
                     <p style={{ color: 'var(--slate-700)', fontSize: '0.88rem' }}>
-                      Masukkan URL Web App API Google Sheets sekolah anda atau Cloud Store API. Setelah dimasukkan, sebarang borang rujukan yang dihantar atau dikemaskini oleh mana-mana guru/kaunselor akan disegerakkan secara automatik ke semua peranti!
+                      Masukkan URL Web App API Google Sheets sekolah anda. Setelah dimasukkan, sebarang borang rujukan yang dihantar atau dikemaskini oleh mana-mana guru/kaunselor akan disegerakkan secara automatik ke semua peranti!
                     </p>
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">URL API Google Sheets / Pangkalan Data Awan <span className="required">*</span></label>
+                    <label className="form-label">URL API Google Sheets Web App <span className="required">*</span></label>
                     <input 
                       type="url"
                       placeholder="Contoh: https://script.google.com/macros/s/AKfycbx.../exec"
@@ -4127,22 +4194,47 @@
                       className="form-input"
                       style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}
                     />
+                    <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', marginTop: '0.35rem', display: 'block' }}>
+                      *URL ini dimasukkan sekali oleh Pentadbir Sistem. Semua guru & kaunselor akan auto-sync secara automatik.
+                    </span>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Emel Penerima Notifikasi Kes Baharu (Kaunselor)</label>
+                    <input 
+                      type="text"
+                      placeholder="Contoh: kaunselor@gmail.com (Boleh lebih dari 1, asingkan dengan koma)"
+                      defaultValue={getCounselorNotificationEmail()}
+                      id="counselorEmailInput"
+                      className="form-input"
+                      style={{ fontSize: '0.9rem' }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)', marginTop: '0.35rem', display: 'block' }}>
+                      *Emel notifikasi akan dihantar secara automatik apabila guru menghantar rujukan murid baharu.
+                    </span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-                    <button type="button" onClick={() => { localStorage.removeItem(CLOUD_SYNC_URL_KEY); setIsCloudConnected(false); alert('Penyamaan Awan Dinyahaktifkan. Mod LocalStorage diaktifkan.'); setShowCloudSyncModal(false); }} className="btn btn-secondary">
+                    <button type="button" onClick={() => {
+                      localStorage.removeItem(CLOUD_SYNC_URL_KEY);
+                      setIsCloudConnected(false);
+                      alert('Penyamaan Awan Dinyahaktifkan. Mod LocalStorage diaktifkan.');
+                      setShowCloudSyncModal(false);
+                    }} className="btn btn-secondary">
                       Guna Mod Tempatan
                     </button>
                     <button type="button" onClick={() => {
-                      const val = document.getElementById('cloudUrlInput').value.trim();
-                      if (val) {
-                        localStorage.setItem(CLOUD_SYNC_URL_KEY, val);
-                        setIsCloudConnected(true);
-                        alert('URL Pangkalan Data Awan Berjaya Disimpan!');
-                        setShowCloudSyncModal(false);
-                      } else {
-                        alert('Sila masukkan URL API yang sah.');
+                      const urlVal = document.getElementById('cloudUrlInput').value.trim();
+                      const emailVal = document.getElementById('counselorEmailInput').value.trim();
+                      if (!urlVal || !urlVal.startsWith('http')) {
+                        alert('Sila masukkan URL Web App yang sah (bermula dengan https://).');
+                        return;
                       }
+                      localStorage.setItem(CLOUD_SYNC_URL_KEY, urlVal);
+                      if (emailVal) localStorage.setItem(COUNSELOR_EMAIL_KEY, emailVal);
+                      setIsCloudConnected(true);
+                      alert('[SUCCESS] Tetapan Pangkalan Awan berjaya disimpan! Semua peranti kini akan auto-sync secara real-time.');
+                      setShowCloudSyncModal(false);
                     }} className="btn btn-primary">
                       Simpan & Aktifkan Penyamaan
                     </button>
@@ -4293,15 +4385,8 @@
     }
 
     // --- FORM PAGE COMPONENT WITH SELECTION / CUSTOM INPUT ---
-    function FormPage({ students, onSubmit }) {
-      const [step, setStep] = useState(1);
-      const [searchQuery, setSearchQuery] = useState('');
-      const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-
-      const [teacherSelectMode, setTeacherSelectMode] = useState('PRESET');
-      const [studentSelectMode, setStudentSelectMode] = useState('PRESET');
-
-      const [formData, setFormData] = useState({
+    function FormPage({ students, onSubmit, isSubmitting, preSelectedStudent, onClearPreSelected }) {
+      const BLANK_FORM = {
         guruNama: '',
         tarikh: new Date().toISOString().split('T')[0],
         jenisPerkhidmatan: 'BIMBINGAN_INDIVIDU',
@@ -4315,7 +4400,44 @@
         ulasanPdP: '',
         tindakanGuru: '',
         pengesahan: true,
-      });
+      };
+
+      const [step, setStep] = useState(1);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+
+      const [teacherSelectMode, setTeacherSelectMode] = useState('PRESET');
+      const [studentSelectMode, setStudentSelectMode] = useState('PRESET');
+
+      const [formData, setFormData] = useState(BLANK_FORM);
+
+      // Auto-fill murid daripada Direktori Murid
+      useEffect(() => {
+        if (preSelectedStudent) {
+          setFormData(prev => ({
+            ...prev,
+            muridId: preSelectedStudent.id,
+            muridNama: preSelectedStudent.nama,
+            muridIc: preSelectedStudent.ic,
+            muridKelas: preSelectedStudent.kelas,
+            muridJantina: preSelectedStudent.jantina || 'LELAKI',
+          }));
+          setStudentSelectMode('PRESET');
+          setSearchQuery(preSelectedStudent.nama);
+          setStep(2); // Terus ke Step 2 (maklumat murid sudah ada)
+          if (typeof onClearPreSelected === 'function') onClearPreSelected();
+        }
+      }, [preSelectedStudent]);
+
+      // Fungsi reset borang ke keadaan asal
+      const resetForm = () => {
+        setFormData(BLANK_FORM);
+        setStep(1);
+        setSearchQuery('');
+        setTeacherSelectMode('PRESET');
+        setStudentSelectMode('PRESET');
+        setIsDropdownOpen(false);
+      };
 
       const handleTeacherSelect = (e) => {
         const val = e.target.value;
@@ -4365,12 +4487,13 @@
       const handleSubmit = (e) => {
         e.preventDefault();
         if (step < 4) {
-          if (step === 1 && !formData.guruNama) return alert('Sila pilih atau taip Nama Guru.');
+          if (step === 1 && !formData.guruNama) return alert('Sila pilih atau taip Nama Guru terlebih dahulu.');
           if (step === 2 && (!formData.muridNama || !formData.muridKelas)) return alert('Sila pilih atau taip Nama Murid dan Kelas.');
-          if (step === 3 && (!formData.ulasanPdP || formData.ulasanPdP.trim().length < 5)) return alert('Sila isi ulasan sikap PdP murid.');
+          if (step === 3 && (!formData.ulasanPdP || formData.ulasanPdP.trim().length < 5)) return alert('Sila isi ulasan sikap PdP murid (sekurang-kurangnya 5 aksara).');
           setStep(step + 1);
         } else {
-          onSubmit(formData);
+          if (!formData.pengesahan) return alert('Sila tandakan pengesahan sebelum menghantar.');
+          onSubmit(formData, resetForm);
         }
       };
 
@@ -4707,18 +4830,23 @@
               {/* Action buttons */}
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2.25rem', paddingTop: '1.35rem', borderTop: '1px solid var(--slate-200)' }}>
                 {step > 1 && (
-                  <button type="button" onClick={() => setStep(step - 1)} className="btn btn-secondary">
+                  <button type="button" onClick={() => setStep(step - 1)} className="btn btn-secondary" disabled={isSubmitting}>
                     Kembali
                   </button>
                 )}
 
                 {step < 4 ? (
-                  <button type="submit" className="btn btn-primary" style={{ marginLeft: 'auto' }}>
-                    Teruskan
+                  <button type="submit" className="btn btn-primary" style={{ marginLeft: 'auto' }} disabled={isSubmitting}>
+                    Teruskan &gt;
                   </button>
                 ) : (
-                  <button type="submit" className="btn btn-primary" style={{ marginLeft: 'auto' }}>
-                    Hantar Rujukan Klien
+                  <button 
+                    type="submit" 
+                    className="btn btn-primary" 
+                    style={{ marginLeft: 'auto', opacity: isSubmitting ? 0.7 : 1 }}
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? 'Menghantar Rujukan...' : 'Hantar Rujukan Klien'}
                   </button>
                 )}
               </div>
